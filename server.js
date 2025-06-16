@@ -6,7 +6,9 @@ const cors = require("cors");
 const authRoutes = require("./routes/auth");
 
 const app = express();
-app.use(cors());
+app.use(cors(
+  origin:["https://admin-pannel-swart.vercel.app","https://upstep-academy-teaching-platform.vercel.app"]
+));
 app.use(express.json());
 
 mongoose.connect(process.env.MONGODB_URI, {
