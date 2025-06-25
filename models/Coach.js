@@ -22,8 +22,8 @@ const coachSchema = new mongoose.Schema({
   },
   level: {
     type: String,
-    enum: ["beginner", "senior", "master"],
-    default: "beginner"
+    enum: ["Beginner", "AdvancedBeginner", "Intermediate", "AdvancedPart1", "AdvancedPart2", "SubJunior", "Junior", "SeniorPart1", "SeniorPart2"],
+    default: "Beginner"
   },
   status: {
     type: String,
