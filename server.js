@@ -7,7 +7,22 @@ const authRoutes = require("./routes/auth");
 const coachRoutes = require("./routes/Coaches");
 
 const app = express();
-app.use(cors());
+
+// ✅ CORS Configuration
+const allowedOrigins = [
+  "https://admin-pannel-swart.vercel.app",
+  "https://upstep-academy-teaching-platform.vercel.app"
+];
+
+app.use(cors({
+  origin: allowedOrigins,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+}));
+
+app.options("*", cors()); // ✅ Allow preflight requests
+
 app.use(express.json());
 
 // 🔗 MongoDB Connection
@@ -17,6 +32,11 @@ mongoose.connect(process.env.MONGODB_URI, {
 })
 .then(() => console.log("MongoDB connected"))
 .catch((err) => console.log("MongoDB error:", err));
+
+// 🔗 Routes
+app.get("/", (_, res) => {
+  res.json({ success: "Server is running" });
+});
 
 app.use("/api", authRoutes);
 app.use("/api/coaches", coachRoutes);
