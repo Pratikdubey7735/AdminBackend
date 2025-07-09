@@ -4,23 +4,28 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 
 const authRoutes = require("./routes/auth");
+const coachRoutes = require("./routes/Coaches");
 
 const app = express();
 
-// ✅ CORS Configuration
+// ✅ Allow specific frontend domains
 const allowedOrigins = [
   "https://admin-pannel-swart.vercel.app",
-  "https://upstep-academy-teaching-platform.vercel.app"
+  "https://upstep-academy-teaching-platform.vercel.app",
+  "http://localhost:3000" // optional for local dev
 ];
 
 app.use(cors({
-  origin: allowedOrigins,
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps, curl, Postman)
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true // only if you're using cookies or sessions
 }));
-
-app.options("*", cors()); // ✅ Allow preflight requests
 
 app.use(express.json());
 
@@ -31,17 +36,11 @@ mongoose.connect(process.env.MONGODB_URI, {
 .then(() => console.log("MongoDB connected"))
 .catch((err) => console.log("MongoDB error:", err));
 
-// 🔗 Routes
-app.get("/", (_, res) => {
-  res.json({ success: "Server is running" });
-});
-
+// Routes
 app.use("/api", authRoutes);
+app.use("/api/coaches", coachRoutes);
 
-// ✅ Start Server
+// Start server
 app.listen(process.env.PORT, () =>
   console.log(`Server running on http://localhost:${process.env.PORT}`)
 );
-
-const coachRoutes = require("./routes/Coaches");
-app.use("/api/coaches", coachRoutes);
