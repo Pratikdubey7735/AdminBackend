@@ -12,7 +12,8 @@ const app = express();
 const allowedOrigins = [
   "https://admin-pannel-swart.vercel.app",
   "https://upstep-academy-teaching-platform.vercel.app",
-  "http://localhost:3000" // optional for local dev
+  "http://localhost:5173",
+  "http://localhost:5174"// optional for local dev
 ];
 
 app.use(cors({
