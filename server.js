@@ -7,12 +7,15 @@ const NodeCache = require('node-cache');
 const compression = require('compression');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const http = require('http');
+const socketIo = require('socket.io');
 
 // Import your existing routes
 const authRoutes = require("./routes/auth");
 const coachRoutes = require("./routes/Coaches");
 
 const app = express();
+const server = http.createServer(app);
 
 // Enhanced security with helmet
 app.use(helmet());
@@ -31,7 +34,8 @@ const allowedOrigins = [
   "https://admin-pannel-swart.vercel.app",
   "https://upstep-academy-teaching-platform.vercel.app",
   "http://localhost:5174",
-  "http://localhost:5173", // optional for local dev
+  "http://localhost:5173",
+  "http://localhost:3000", // Added common React dev port
 ];
 
 app.use(cors({
@@ -45,6 +49,136 @@ app.use(cors({
   },
   credentials: true // only if you're using cookies or sessions
 }));
+
+// Socket.IO setup with CORS
+const io = socketIo(server, {
+  cors: {
+    origin: allowedOrigins,
+    methods: ["GET", "POST"],
+    credentials: true
+  }
+});
+
+// Store connected users with their socket IDs
+const connectedUsers = new Map(); // userId -> { socketId, userInfo }
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log(`[${new Date().toISOString()}] New socket connection: ${socket.id}`);
+
+  // Handle user identification
+  socket.on('identify', (userId) => {
+    if (userId) {
+      connectedUsers.set(userId, {
+        socketId: socket.id,
+        userId: userId,
+        connectedAt: new Date()
+      });
+      socket.userId = userId;
+      console.log(`[${new Date().toISOString()}] User ${userId} identified with socket ${socket.id}`);
+      
+      // Join a room based on userId for targeted updates
+      socket.join(`user_${userId}`);
+      
+      // Send confirmation to client
+      socket.emit('identification-confirmed', {
+        userId: userId,
+        socketId: socket.id,
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+
+  // Handle disconnection
+  socket.on('disconnect', () => {
+    if (socket.userId) {
+      connectedUsers.delete(socket.userId);
+      console.log(`[${new Date().toISOString()}] User ${socket.userId} disconnected`);
+    }
+    console.log(`[${new Date().toISOString()}] Socket disconnected: ${socket.id}`);
+  });
+
+  // Handle ping for connection health check
+  socket.on('ping', () => {
+    socket.emit('pong', { timestamp: new Date().toISOString() });
+  });
+
+  // Handle coach data request
+  socket.on('request-coach-data', async (userId) => {
+    try {
+      console.log(`[${new Date().toISOString()}] Coach data requested for user: ${userId}`);
+      
+      // You'll need to implement this based on your Coach model
+      // This is a placeholder - replace with your actual coach fetching logic
+      const Coach = mongoose.model('Coach'); // Assuming you have a Coach model
+      const coach = await Coach.findById(userId).select('-password');
+      
+      if (coach) {
+        socket.emit('coach-data-updated', {
+          userId: userId,
+          coachData: coach,
+          timestamp: new Date().toISOString()
+        });
+      }
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error fetching coach data:`, error);
+      socket.emit('coach-data-error', {
+        userId: userId,
+        error: 'Failed to fetch coach data',
+        timestamp: new Date().toISOString()
+      });
+    }
+  });
+});
+
+// Function to emit real-time updates to specific users
+const emitUserUpdate = (userId, updatedData) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Emitting update to user ${userId}`);
+    io.to(`user_${userId}`).emit('user-updated', {
+      userId: userId,
+      updatedData: updatedData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Error emitting user update:`, error);
+  }
+};
+
+// Function to emit updates to all connected users (for admin broadcasts)
+const emitGlobalUpdate = (message, data) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Emitting global update: ${message}`);
+    io.emit('global-update', {
+      message: message,
+      data: data,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Error emitting global update:`, error);
+  }
+};
+
+// Function to notify coach level changes (for teaching platform)
+const emitCoachLevelUpdate = (userId, newLevel, updatedCoachData) => {
+  try {
+    console.log(`[${new Date().toISOString()}] Emitting level update to user ${userId}: ${newLevel}`);
+    io.to(`user_${userId}`).emit('level-updated', {
+      userId: userId,
+      newLevel: newLevel,
+      updatedData: updatedCoachData,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Error emitting level update:`, error);
+  }
+};
+
+// Make io and emit functions available to routes
+app.set('io', io);
+app.set('emitUserUpdate', emitUserUpdate);
+app.set('emitGlobalUpdate', emitGlobalUpdate);
+app.set('emitCoachLevelUpdate', emitCoachLevelUpdate);
 
 // Parse JSON requests
 app.use(express.json());
@@ -76,7 +210,97 @@ mongoose.connect(process.env.MONGODB_URI, {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({ 
+    status: 'ok',
+    connectedUsers: connectedUsers.size,
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Socket status endpoint
+app.get('/api/socket-status', (req, res) => {
+  const connectedUsersList = Array.from(connectedUsers.entries()).map(([userId, info]) => ({
+    userId,
+    socketId: info.socketId,
+    connectedAt: info.connectedAt
+  }));
+  
+  res.json({
+    totalConnections: connectedUsers.size,
+    connectedUsers: connectedUsersList
+  });
+});
+
+// Enhanced coach verification endpoint for login
+app.post('/api/verify-coach', async (req, res) => {
+  try {
+    const { userId } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Check if user is connected via socket
+    const isConnected = connectedUsers.has(userId);
+    
+    // Fetch fresh coach data (you'll need to implement this based on your Coach model)
+    // const Coach = mongoose.model('Coach');
+    // const coach = await Coach.findById(userId).select('-password');
+    
+    res.json({
+      success: true,
+      isConnected: isConnected,
+      socketId: isConnected ? connectedUsers.get(userId).socketId : null,
+      // coachData: coach, // Uncomment when you have the Coach model
+      timestamp: new Date().toISOString()
+    });
+    
+  } catch (error) {
+    console.error(`[${new Date().toISOString()}] Error verifying coach:`, error);
+    res.status(500).json({ error: 'Failed to verify coach' });
+  }
+});
+
+// Admin endpoint to trigger user updates (for testing)
+app.post('/api/admin/trigger-update', (req, res) => {
+  const { userId, updatedData, apiKey } = req.body;
+  
+  // Basic API key auth for admin operations
+  if (apiKey !== process.env.ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  if (!userId || !updatedData) {
+    return res.status(400).json({ error: 'userId and updatedData are required' });
+  }
+  
+  emitUserUpdate(userId, updatedData);
+  res.json({ 
+    success: true, 
+    message: `Update triggered for user ${userId}`,
+    connectedUsers: connectedUsers.has(userId)
+  });
+});
+
+// Admin endpoint to trigger level updates for teaching
+app.post('/api/admin/update-coach-level', (req, res) => {
+  const { userId, newLevel, updatedCoachData, apiKey } = req.body;
+  
+  // Basic API key auth for admin operations
+  if (apiKey !== process.env.ADMIN_API_KEY) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  
+  if (!userId || !newLevel || !updatedCoachData) {
+    return res.status(400).json({ error: 'userId, newLevel, and updatedCoachData are required' });
+  }
+  
+  emitCoachLevelUpdate(userId, newLevel, updatedCoachData);
+  res.json({ 
+    success: true, 
+    message: `Level update triggered for user ${userId} to level ${newLevel}`,
+    connectedUsers: connectedUsers.has(userId)
+  });
 });
 
 // Endpoint to fetch PGN files based on selected level
@@ -324,13 +548,25 @@ app.use("/api", authRoutes);
 app.use("/api/coaches", coachRoutes);
 
 // Start the server
-const server = app.listen(process.env.PORT, () => {
-  console.log(`[${new Date().toISOString()}] Server running on http://localhost:${process.env.PORT}`);
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`[${new Date().toISOString()}] Server running on http://localhost:${PORT}`);
+  console.log(`[${new Date().toISOString()}] Socket.IO server initialized`);
+  console.log(`[${new Date().toISOString()}] Allowed origins:`, allowedOrigins);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', () => {
   console.log(`[${new Date().toISOString()}] SIGTERM received, shutting down gracefully`);
+  // Close server
+  server.close(() => {
+    console.log(`[${new Date().toISOString()}] Server closed`);
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log(`[${new Date().toISOString()}] SIGINT received, shutting down gracefully`);
   // Close server
   server.close(() => {
     console.log(`[${new Date().toISOString()}] Server closed`);
